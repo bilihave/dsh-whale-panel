@@ -1,0 +1,59 @@
+name: ci
+
+# 每次 push / PR 都跑一遍：语法能不能过、四个界面场景还渲不渲得出来。
+# 这里只做「不花钱、不联网」的静态检查，不跑插件本体，也不碰 B站。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '22', '24']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: 语法检查
+        run: |
+          node --check index.js
+          node --check client.js
+          node --check tools/render-probe.cjs
+
+      - name: package.json 可解析
+        run: node -e "const p=require('./package.json'); if(!p.name||!p.version) process.exit(1); console.log(p.name, p.version)"
+
+      - name: 无依赖声明（插件靠宿主提供运行时）
+        run: node -e "const p=require('./package.json'); const d=Object.keys(p.dependencies||{}); if(d.length){console.error('意外的 dependencies:',d);process.exit(1)}"
+
+      - name: 界面渲染探针（四档场景）
+        run: |
+          node tools/render-probe.cjs empty
+          node tools/render-probe.cjs full
+          node tools/render-probe.cjs cap
+          node tools/render-probe.cjs paused
+
+      - name: 隐私扫描（不该出现在源码里的东西）
+        run: |
+          if grep -rInE 'SESSDATA"?\s*[:=]\s*"[^" ]{8,}|bili_jct"?\s*[:=]\s*"[^" ]{8,}|sk-[A-Za-z0-9]{20,}' \
+               --include='*.js' --include='*.json' --include='*.md' . ; then
+            echo "::error::发现疑似凭据，请立刻移除"
+            exit 1
+          fi
+          echo "未发现硬编码凭据"
+
+      - name: 状态文件不会被误提交
+        run: |
+          if git ls-files | grep -E 'state\.json(\.bak)?$' ; then
+            echo "::error::state.json 被提交进仓库了（里面有登录 cookie）"
+            exit 1
+          fi
+          echo "状态文件未被跟踪"
