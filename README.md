@@ -1,5 +1,10 @@
 # 白鲸台 · dsh-whale-panel
 
+![version](https://img.shields.io/github/package-json/v/bilihave/dsh-whale-panel?color=2f81f7)
+![license](https://img.shields.io/github/license/bilihave/dsh-whale-panel?color=2f81f7)
+![DSH](https://img.shields.io/badge/DeepSeek%20Harness-0.2.x-2f81f7)
+![stars](https://img.shields.io/github/stars/bilihave/dsh-whale-panel?color=2f81f7)
+
 > **一个带预算观念的 B站 策展助手**：按概率认识你，按半衰期遗忘，按峰谷算钱，
 > 只在你划定的额度内替你挑内容。
 >

@@ -12,8 +12,16 @@
     "recommendation",
     "personalization"
   ],
-  "author": "白饭鲸",
+  "author": "bilihave",
   "license": "MIT",
+  "homepage": "https://github.com/bilihave/dsh-whale-panel#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bilihave/dsh-whale-panel.git"
+  },
+  "bugs": {
+    "url": "https://github.com/bilihave/dsh-whale-panel/issues"
+  },
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
