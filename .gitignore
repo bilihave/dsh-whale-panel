@@ -1,0 +1,15 @@
+# 运行时状态：**绝对不要提交**，里面是 B站 登录 cookie（SESSDATA / bili_jct）
+state.json
+state.json.bak
+state.json.pre-revert
+*.tmp
+whale-panel/
+
+# 编辑器 / 系统
+node_modules/
+*.log
+*.bak
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

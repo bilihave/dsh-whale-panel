@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Whale Panel",
+    "description": "A resident floating panel: learns your interests on a probability you set, scans Bilibili for recommendations, mentions you at a configurable rate, mirrors how the comment section actually talks, and caps spend per day and per run. Long-term observations collect in a notes board for your accept or reject. Built-in no-comment policy: never comments on politically sensitive topics, government/policy matters, or research claims in frontier science."
+  }
+}
