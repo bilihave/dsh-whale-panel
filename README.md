@@ -6,6 +6,8 @@
 ![stars](https://img.shields.io/github/stars/bilihave/dsh-whale-panel?color=2f81f7)
 ![ci](https://github.com/bilihave/dsh-whale-panel/actions/workflows/ci.yml/badge.svg)
 
+<img src="assets/social-preview.png" width="880" alt="白鲸台：B站 策展浮窗，按概率学习兴趣、按半衰期淡忘、在 token 额度内挑片">
+
 > **一个带预算观念的 B站 策展助手**：按概率认识你，按半衰期遗忘，按峰谷算钱，
 > 只在你划定的额度内替你挑内容。
 >
