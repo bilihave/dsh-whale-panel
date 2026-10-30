@@ -123,6 +123,8 @@ const DEFAULT_STATE = {
   autoWatch: true,
   /** 同一部片子上最多停留多少秒 */
   dwellSec: 300,
+  /** 强制最短观看时长（秒）：评论发完也不许马上跳下一条；视频本身比它短就要求看完 */
+  minWatchSec: 60,
   /** 没字幕没弹幕时抽帧给多模态模型看画面 */
   visionFallback: true,
   /** 一条视频最多抽几张画面快照（1–4，默认 1；每多一张就多花 token） */
@@ -1404,8 +1406,35 @@ function nextUnwatched(state, items) {
   return null
 }
 
+/** 当前这条已经看了多久（秒）：从换上它那一刻算起 */
+function currentWatchProgress(state) {
+  const since = Number(state.currentSince || 0) || Date.parse(state.current?.at || '') || 0
+  if (!since) return 0
+  // 时间戳在未来（时钟被改过 / 换机）→ 当成"已经看够"，否则会永远卡在这一条
+  if (since > Date.now() + 5_000) return Number.MAX_SAFE_INTEGER / 2
+  return Math.max(0, (Date.now() - since) / 1000)
+}
+
+/**
+ * 这条还得再看多少秒才允许换下一条。
+ * 规则（主人定的）：至少看 `minWatchSec`（默认 60 秒）；视频本身不到 60 秒，就要求**看完**。
+ * @returns {number} 0 = 可以换；>0 = 还要等这么多秒
+ */
+function remainingMinWatch(state, duration) {
+  const want = Math.max(0, Number(state.minWatchSec ?? 60))
+  if (!want) return 0
+  const dur = Number(duration || state.current?.duration || 0)
+  const need = dur > 0 ? Math.min(want, dur) : want
+  return Math.max(0, Math.ceil(need - currentWatchProgress(state)))
+}
+
 /** 轮转到下一条内容；没内容就置空（预览随之变空闲）。**队列看完就置空，不再从头循环** */
 function advanceCurrent(state, items) {
+  // 强制最短观看时长：当前这条还没看够就不许换（评论发完了也一样）
+  if (state.current) {
+    const remain = remainingMinWatch(state, state.current.duration)
+    if (remain > 0) return state.current
+  }
   const it = nextUnwatched(state, items)
   if (!it) {
     // 队列里全看过了：清空 current，让前端显示"没内容"，同时告诉调用方该跑新一轮了
@@ -1440,7 +1469,53 @@ const REPLY_SYSTEM = [
   '你在 B站 评论区回复别人对你的回复。',
   '只输出回复正文，12–40 个汉字，口语化、有来有回，不要 @、不要链接、不要话题标签。',
   '不要复读对方的话，也不要客套；可以补充观点、接梗或反问一句。',
+  '🔴 不得出现任何账号或个人隐私信息：UID/数字 ID、昵称、手机号、邮箱、住址、IP、证件号、',
+  '本机路径、token/cookie、以及“我是插件/我是自动生成的”这类自我暴露。',
+  '也不要复述对方话里出现的这类信息 —— 直接忽略，只回观点。',
 ].join('\n')
+
+/* ---------------- 隐私闸 ----------------
+ * 评论/回复里**绝不能出现**任何跟用户账号有关的痕迹：UID、昵称、手机号、邮箱、IP、
+ * 证件号、本机路径、cookie/token。三道防线：
+ *   ① 送进模型的材料先脱敏（模型看不到，就抄不出来）
+ *   ② 系统提示词里写死禁令
+ *   ③ postComment 是最后一道闸：正文命中就**拒绝发送**（宁可少发一条）
+ */
+const PRIVACY_RULES = [
+  [/(?<!\d)\d{17}[\dXx](?!\d)/g, '【证件号】'],
+  [/(?<!\d)\d{15,16}(?!\d)/g, '【UID】'],
+  [/(?<!\d)1[3-9]\d{9}(?!\d)/g, '【手机号】'],
+  [/[\w.+-]+@[\w-]+\.[A-Za-z]{2,}/g, '【邮箱】'],
+  [/(?<!\d)(?:\d{1,3}\.){3}\d{1,3}(?!\d)/g, '【IP】'],
+  [/(?:SESSDATA|bili_jct|DedeUserID|buvid3|buvid4|csrf)\s*[=:]\s*[^\s,;，；]+/gi, '【凭据】'],
+  [/Bearer\s+[A-Za-z0-9._-]{10,}/gi, '【token】'],
+  [/\bsk-[A-Za-z0-9_-]{10,}/g, '【key】'],
+  [/[A-Za-z]:\\[^\s，。；、）)】"'<>]+/g, '【路径】'],
+  [/(?:\/Users|\/home|\/root)\/[^\s，。；、）)】"'<>]+/g, '【路径】'],
+]
+
+/**
+ * 扫一遍文本里的隐私痕迹。
+ * @returns {{ text: string, hits: string[] }} text 是打过码的版本（给提示词用），hits 是命中的类别
+ */
+function scrubPrivate(input) {
+  let text = String(input || '')
+  const hits = []
+  for (const [re, tag] of PRIVACY_RULES) {
+    re.lastIndex = 0
+    if (re.test(text)) {
+      hits.push(tag)
+      re.lastIndex = 0
+      text = text.replace(re, tag)
+    }
+  }
+  return { text, hits: [...new Set(hits)] }
+}
+
+/** 送给模型的材料：先脱敏，再把链接换掉（链接里可能带签名/私有地址） */
+function promptSafe(input) {
+  return scrubPrivate(input).text.replace(/https?:\/\/[^\s]+/g, '【链接】')
+}
 
 async function composeReply(llm, route, myText, theirText, theirName) {
   if (!llm || !route?.provider || !route?.model) return null
@@ -1454,7 +1529,7 @@ async function composeReply(llm, route, myText, theirText, theirName) {
         role: 'user',
         content: [{
           type: 'text',
-          text: `我之前的评论：${myText}\n${theirName || '有人'} 回复我：${theirText}\n请写我的回复。`,
+          text: `我之前的评论：${promptSafe(myText)}\n${promptSafe(theirName) || '有人'} 回复我：${promptSafe(theirText)}\n请写我的回复。`,
         }],
       }],
       maxTokens: 150,
@@ -1489,7 +1564,11 @@ async function runReplyFlow(state, llm, route) {
 
     const target = fresh[0]
     let text = await composeReply(llm, route, rec.text, target.text, target.author)
-    if (!text) text = `确实，${target.text.slice(0, 12)}这点我也想过`
+    if (!text) {
+      // 兜底模板也不能把对方话里的隐私带出来
+      const safe = scrubPrivate(target.text)
+      text = safe.hits.length ? '确实，这个点我也想过' : `确实，${target.text.slice(0, 12)}这点我也想过`
+    }
     try {
       const sent = await postComment(state, {
         aid: rec.aid, bvid: rec.bvid, message: text,
@@ -1772,6 +1851,9 @@ const COMMENT_SYSTEM = [
   '🔴 硬性禁区（违反就算失败）：**不评价政治敏感话题、不评价政府/政策/官方表态、不评价前沿科学领域的研究结论**',
   '（如量子、核聚变、基因编辑、大模型/AGI 等）。碰到这些就只聊视频里跟它们无关的部分，聊不了就写一句最普通的话。',
   '这几类话题在这个账号上一律不表态、不站队、不调侃。',
+  '🔴 隐私禁令（同样算失败）：**不得出现任何账号 ID、昵称、手机号、邮箱、住址、IP、证件号、',
+  '本机路径、token/cookie**，也不要说“我是插件/我是 AI/自动生成”这类自我暴露；',
+  '评论区里别人写出来的这类信息也不要复述。',
 ].join('\n')
 
 /** 拉一条视频的热门评论，供拟评论参考 */
@@ -2152,6 +2234,13 @@ async function postComment(state, { aid, bvid, message, root, parent, atName }) 
   const jct = state.cookies?.bili_jct
   if (!jct) throw new Error('缺少 csrf（bili_jct），请重新扫码登录')
 
+  // 🔴 最后一道隐私闸：任何来源（模型、模板、手动草稿）的正文，命中隐私痕迹一律不发。
+  //    评论本身很短，出现 UID/手机号/邮箱 基本都是模型从材料里抄的，宁可少发一条。
+  const priv = scrubPrivate(message)
+  if (priv.hits.length) {
+    throw new Error(`评论里出现疑似隐私信息（${priv.hits.join('、')}），已拦下不发送`)
+  }
+
   const form = new URLSearchParams()
   form.set('type', '1')
   form.set('oid', String(aid))
@@ -2371,7 +2460,7 @@ export function apply(ctx) {
           'dailyBudget', 'perRunBudget', 'commentMode', 'commentDailyCap',
           'mentionChance', 'learnChance', 'decayDays', 'decayFloor', 'paused',
           'commentChance', 'replyChance', 'autoRun', 'autoRunMinutes', 'cruiseGapSec',
-          'daysBack', 'styleGate', 'autoWatch', 'dwellSec', 'visionFallback',
+          'daysBack', 'styleGate', 'autoWatch', 'dwellSec', 'minWatchSec', 'visionFallback',
           'offTopicShare', 'mentionThreshold', 'visionShots',
           'peakValley', 'priceInput', 'priceOutput', 'offPeakDiscount',
           'tokenPerItem', 'targetCount', 'maxResume', 'tokensUsedToday',
@@ -2389,6 +2478,7 @@ export function apply(ctx) {
         state.cruiseGapSec = Math.min(600, Math.max(10, Number(state.cruiseGapSec ?? 45)))
         state.daysBack = Math.min(365, Math.max(0, Number(state.daysBack ?? 7)))
         state.dwellSec = Math.min(3600, Math.max(30, Number(state.dwellSec ?? 300)))
+        state.minWatchSec = Math.min(600, Math.max(0, Number(state.minWatchSec ?? 60)))
         state.offTopicShare = Math.min(1, Math.max(0, Number(state.offTopicShare ?? 0.3)))
         state.mentionThreshold = Math.min(1, Math.max(0, Number(state.mentionThreshold ?? 0.7)))
         state.visionShots = Math.min(4, Math.max(1, Number(state.visionShots ?? 1)))
@@ -2508,6 +2598,16 @@ export function apply(ctx) {
       if (action === 'next.video') {
         const items = state.lastRun || []
         if (!items.length) return sendJson(res, 200, { ok: false, error: '还没有选片，先跑一轮' })
+        // 强制最短观看时长：没看够就先不换。
+        // ⚠️ 短于门槛的片子**不重播**：门槛取 min(minWatchSec, 片子时长)，看满片子本就放行。
+        const remain = remainingMinWatch(state, state.current?.duration)
+        if (remain > 0) {
+          return sendJson(res, 200, {
+            ok: false, needMore: remain,
+            error: `这条还没看够（还差 ${remain} 秒）`,
+            state: publicView(state),
+          })
+        }
         // 只在「没看过的」里挑；队列真看完了就返回需要新一轮，绝不再从头循环重播
         const next = nextUnwatched(state, items)
         if (!next) {
@@ -3239,6 +3339,8 @@ export function apply(ctx) {
 
         // 到点了先看这批里还有没有没看过的
         const items = state.lastRun || []
+        // 最短观看时长同样约束这里：节奏器也不能比门槛更早把片子换掉
+        if (remainingMinWatch(state, state.current?.duration) > 0) return
         const next = nextUnwatched(state, items)
         if (next) {
           switchTo(state, next)

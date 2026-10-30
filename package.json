@@ -1,6 +1,6 @@
 {
   "name": "dsh-whale-panel",
-  "version": "1.26.1",
+  "version": "1.27.0",
   "private": true,
   "type": "module",
   "description": "白鲸台 · DeepSeek Harness 常驻浮窗：按概率自动学习主人兴趣、刷 B站挑推荐、@ 主人、实时学习评论区语气、按预算封顶，并把长期观察沉淀成留言区等你反馈。",

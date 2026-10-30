@@ -521,13 +521,18 @@ window.__ModuleLoader__.load({
       }, [playerOn, liveBvid, call, st?.paused])
 
       // 播完了 → 叫宿主把「正在看」换成下一条，形成连播。
-      // 换不动时（队列看光 / 请求失败）必须**复位 ended**，然后过一会儿重试，
+      // 换不动时（队列看光 / 请求失败 / 还没看够时长）必须**复位 ended**，然后过一会儿重试，
       // 否则界面会永远卡在"已播完"那一屏 —— 这是"卡住"的直接原因。
+      // ⚠️ 改成「间隔轮询」而不是一套 setTimeout 链：以前在回调里 setEnded(false) 会触发
+      //    本 effect 的 cleanup，把刚排好的 retry 一起清掉 → 定时器丢了就再也不换片。
+      //    现在只要 ended 还是 true，interval 就会一直试，换成功了才停。
       useEffect(() => {
         if (!ended || !autoPlay || !liveBvid || st?.paused) return
         let stopped = false
-        let retry = null
+        let busy = false
         const go = async () => {
+          if (stopped || busy) return
+          busy = true
           try {
             const d = await call('next.video')
             if (stopped) return
@@ -543,23 +548,25 @@ window.__ModuleLoader__.load({
               setPlayBase(0)
               setWatchAt(0)
               setNote('这一批都看过了，等下一轮挑新的')
-              retry = setTimeout(go, 60_000) // 一分钟后看看是不是有新内容了
               return
             }
-            setEnded(false)
-            retry = setTimeout(go, 10_000)
-          } catch {
-            if (!stopped) {
-              setEnded(false)
-              retry = setTimeout(go, 10_000)
+            if (d && d.needMore) {
+              // 最短观看时长没到：**不重播这条**，等它自己走够时间再来换
+              setNote(`这条还没看够，${d.needMore} 秒后再换`)
+              return
             }
+          } catch {
+            // 网络抖动：什么都别做，下一拍继续试
+          } finally {
+            busy = false
           }
         }
-        const id = setTimeout(go, 2500)
+        const first = setTimeout(go, 2500)
+        const id = setInterval(go, 5_000)
         return () => {
           stopped = true
-          clearTimeout(id)
-          if (retry) clearTimeout(retry)
+          clearTimeout(first)
+          clearInterval(id)
         }
       }, [ended, autoPlay, liveBvid, call, st?.paused])
 
@@ -1141,6 +1148,12 @@ window.__ModuleLoader__.load({
                 ),
                 h('span', { style: css.faint },
                   '到点就换下一条，不管它本来多长；界面不在这一页时也按这个时间换，保证一直在刷'),
+                h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 2 } },
+                  h('span', { style: { ...css.label, flex: 1 } }, '最少看够多久才许换（秒）'),
+                  numField('minWatchSec', s.minWatchSec ?? 60, { min: 0, max: 600, step: 5, width: 64 }),
+                ),
+                h('span', { style: css.faint },
+                  '评论发完了也不许马上跳；视频本身比这个短就按"看完"算（不会重播它来凑时间）。填 0 = 不限制'),
                 h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 2 } },
                   h('span', { style: { ...css.label, flex: 1 } }, '只挑最近几天的片子'),
                   numField('daysBack', s.daysBack ?? 7, { min: 0, max: 365, step: 1, width: 60 }),
