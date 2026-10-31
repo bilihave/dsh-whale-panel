@@ -1,16 +1,19 @@
 {
   "name": "dsh-whale-panel",
-  "version": "1.27.0",
-  "private": true,
+  "version": "1.28.0",
   "type": "module",
-  "description": "白鲸台 · DeepSeek Harness 常驻浮窗：按概率自动学习主人兴趣、刷 B站挑推荐、@ 主人、实时学习评论区语气、按预算封顶，并把长期观察沉淀成留言区等你反馈。",
+  "description": "白鲸台 · DeepSeek Harness 常驻浮窗：按概率学习你的 B站 兴趣并按半衰期淡忘，在 token 额度内挑片，契合度达标才 @ 你，评论有日上限与脱敏闸，政治/政府/前沿科学一律不评价。",
   "keywords": [
     "dsh",
     "dsh-plugin",
     "deepseek-harness",
     "bilibili",
+    "bilibili-plugin",
     "recommendation",
-    "personalization"
+    "curation",
+    "interest-profile",
+    "personalization",
+    "floating-panel"
   ],
   "author": "bilihave",
   "license": "MIT",
@@ -21,6 +24,9 @@
   },
   "bugs": {
     "url": "https://github.com/bilihave/dsh-whale-panel/issues"
+  },
+  "engines": {
+    "node": ">=20"
   },
   "exports": {
     ".": "./index.js",
@@ -37,8 +43,13 @@
     "README.md",
     "CHANGELOG.md",
     "LICENSE",
-    "docs/*.md"
+    "docs/*.md",
+    "tools/*.cjs"
   ],
+  "scripts": {
+    "check": "node --check index.js && node --check client.js && node tools/render-probe.cjs empty && node tools/render-probe.cjs full && node tools/render-probe.cjs cap && node tools/render-probe.cjs paused",
+    "pack:dry": "npm pack --dry-run"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
