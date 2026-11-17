@@ -1808,7 +1808,14 @@ async function runAutoComment(state, llm, route, item, attachments) {
     return { skipped: `涉「${outOfScope.field}」，不在下面说话` }
   }
 
-  const comments = await fetchComments(state, v.aid, 12)
+  // 先通读评论区：热门 + 最新各一页，合并去重（wide）
+  // 主人 2026-11-17 的要求：**每次评论前都要先读别人的评论**，这样接的话才跟讨论对得上。
+  const comments = await fetchComments(state, v.aid, 20, { wide: true })
+  if (comments.length) {
+    log('info', `先读了 ${comments.length} 条评论（该视频共 ${comments.total || comments.length} 条）`)
+  } else {
+    log('info', '这条视频还没有评论，只能围绕视频本身写')
+  }
   // 素材：字幕 > 弹幕 > 画面抽帧；评论区作为「整体看法」最后一起给模型
   // 带上"已经看到哪儿"，画面快照要按这个位置判断后面有没有弹幕
   v.watchedAt = Number(state.watchPosition?.bvid === v.bvid ? state.watchPosition.at : 0)
@@ -1842,39 +1849,83 @@ async function runAutoComment(state, llm, route, item, attachments) {
 }
 
 const COMMENT_SYSTEM = [
-  '你在替一个普通 B站 用户写一条视频评论。',
+  '你在替一个普通 B站 用户写一条视频评论。判断标准只有一个：**像真人随手打的，不像 AI 写的**。',
   '要求：只输出评论正文，不要解释、不要引号、不要 @、不要链接、不要话题标签。',
-  '必须先看“评论区现状”，顺着大家正在聊的方向说，不能脱离讨论自说自话。',
-  '不要复读别人已经说过的话，也不要说“说得好”“同感”这类空话；如果你同意某一点，就点出那一点再补自己的看法。',
-  '语气和长度要向该评论区靠拢：大家短你就短，大家爱开玩笑你就别端着。',
-  '长度控制在 12–45 个汉字。',
+  '',
+  '【先读评论区，再说自己】',
+  '给你的材料里有「评论区现状」。写完之前先在心里确认：大家在聊哪个点？我的这条是接着哪一句说的？',
+  '如果你的评论换成任何一条视频都成立，那就是废话，重写。',
+  '不要复读别人已经说过的话；同意某一点就点出那一点，再补一句自己的看法。',
+  '',
+  '【真人长什么样】',
+  '· 长短跟着评论区走：大家五个字，你就别写三十个字；大家爱开玩笑，你就别端着讲道理。',
+  '· 允许口语和语气词：啊、吧、属实、这波、绷不住、笑死、行吧、离谱。最多用两个，堆多了假。',
+  '· 允许句子不完整：「这剪辑…」「前面那段直接劝退」。不必主谓宾齐全。',
+  '· 可以只回应一个细节（一句台词、一个动作、一个失误），不用覆盖视频全貌。',
+  '· 12–45 个汉字，一到两句。宁可短，别凑字。',
+  '',
+  '【绝对不要】',
+  '· 套话开头：不得不说 / 说实话 / 总而言之 / 在我看来 / 认真的说。',
+  '· 总结升华结尾：值得深思 / 不仅是…更是… / 让人倍感温暖。',
+  '· 作文词堆砌：不仅、更是、体现、传达、内涵、维度、赋能、生态。',
+  '· 四句等长排比、署名式破折号结尾。',
+  '· 自称「我是 AI / 我是插件 / 自动生成」，也不要提「这个账号」。',
+  '',
   '🔴 硬性禁区（违反就算失败）：**不评价政治敏感话题、不评价政府/政策/官方表态、不评价前沿科学领域的研究结论**',
   '（如量子、核聚变、基因编辑、大模型/AGI 等）。碰到这些就只聊视频里跟它们无关的部分，聊不了就写一句最普通的话。',
   '这几类话题在这个账号上一律不表态、不站队、不调侃。',
   '🔴 隐私禁令（同样算失败）：**不得出现任何账号 ID、昵称、手机号、邮箱、住址、IP、证件号、',
-  '本机路径、token/cookie**，也不要说“我是插件/我是 AI/自动生成”这类自我暴露；',
-  '评论区里别人写出来的这类信息也不要复述。',
+  '本机路径、token/cookie**；评论区里别人写出来的这类信息也不要复述。',
 ].join('\n')
 
-/** 拉一条视频的热门评论，供拟评论参考 */
-async function fetchComments(state, aid, limit = 15) {
-  try {
-    const j = await getJson(
-      `https://api.bilibili.com/x/v2/reply?type=1&oid=${aid}&pn=1&ps=${limit}&sort=2`,
-      state.cookies,
-    )
-    if (j?.code !== 0) return []
-    return (j?.data?.replies || [])
-      .map((r) => ({
+/**
+ * 拉评论供拟评论参考。
+ * wide=true 时同时拉「按热度」和「按时间」两页再合并去重 ——
+ * 只看热门会只看到高赞老评论，看不到「现在大家在聊什么」，
+ * 而评论要接的恰恰是后者。
+ */
+async function fetchComments(state, aid, limit = 15, { wide = false } = {}) {
+  const one = async (sort) => {
+    try {
+      const j = await getJson(
+        `https://api.bilibili.com/x/v2/reply?type=1&oid=${aid}&pn=1&ps=${limit}&sort=${sort}`,
+        state.cookies,
+      )
+      if (j?.code !== 0) return { list: [], total: 0 }
+      const list = (j?.data?.replies || []).map((r) => ({
+        rpid: r?.rpid,
         text: String(r?.content?.message || '').replace(/\s+/g, ' ').slice(0, 120),
         like: Number(r.like || 0),
         author: r?.member?.uname || '',
-      }))
-      .filter((c) => c.text)
-      .sort((a, b) => b.like - a.like)
-  } catch {
-    return []
+        at: Number(r?.ctime || 0),
+      })).filter((c) => c.text)
+      return { list, total: Number(j?.data?.page?.count || j?.data?.page?.acount || list.length) }
+    } catch {
+      return { list: [], total: 0 }
+    }
   }
+
+  if (!wide) {
+    const { list, total } = await one(2)
+    const out = list.sort((a, b) => b.like - a.like)
+    out.total = total
+    return out
+  }
+
+  // 两种排序各拉一页：热门看「整体在看什么」，最新看「现在在说什么」
+  const [hot, fresh] = await Promise.all([one(2), one(0)])
+  const seen = new Set()
+  const merged = []
+  for (const c of [...hot.list, ...fresh.list]) {
+    if (!c.rpid || seen.has(c.rpid)) continue
+    seen.add(c.rpid)
+    merged.push(c)
+  }
+  const out = merged.slice(0, Math.max(limit, 40))
+  out.total = Math.max(hot.total, fresh.total, merged.length)
+  out.hotCount = hot.list.length
+  out.freshCount = fresh.list.length
+  return out
 }
 
 /** 用宿主模型结合视频与评论区现状拟一条评论；失败返回 null 交给模板兜底 */
@@ -1911,16 +1962,32 @@ async function composeComment(llm, route, state, video, comments, digest = null)
     for (const c of comments) for (const t of tokenize(c.text)) freq.set(t, (freq.get(t) || 0) + 1)
     const phrases = [...freq.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([t]) => t)
 
+    // 热门 6 条 + 最新 6 条：既知道整体在看什么，也知道现在在说什么
+    const byLike = [...comments].sort((a, b) => b.like - a.like).slice(0, 6)
+    const byTime = [...comments].sort((a, b) => (b.at || 0) - (a.at || 0)).slice(0, 6)
+    const picked = []
+    const seen = new Set()
+    for (const c of [...byLike, ...byTime]) {
+      if (seen.has(c.text)) continue
+      seen.add(c.text)
+      picked.push(c)
+    }
+
     lines.push('')
-    lines.push(`【④评论区（观众对这条的整体看法；${total} 条热门，平均 ${avg} 字，带表情 ${emoji} 条，高频词：${phrases.join('、') || '无'}）】`)
-    for (const c of comments.slice(0, 6)) {
-      lines.push(`- 「${c.text}」（${c.like} 赞）`)
+    lines.push(`【④评论区现状（这是你要接的讨论；共 ${comments.total || total} 条，这里给 ${picked.length} 条：按热度+按最新混合）】`)
+    lines.push(`整体风格：平均 ${avg} 字，带表情 ${emoji} 条，高频词：${phrases.join('、') || '无'}`)
+    for (const c of picked) {
+      const tail = c.like >= 50 ? `（${c.like} 赞，高赞）` : (c.like > 0 ? `（${c.like} 赞）` : '（新评论）')
+      lines.push(`- 「${c.text}」${tail}`)
     }
     lines.push('')
-    lines.push('请顺着上面这些讨论的方向写一条自己的评论，可以补充角度、接个梗，或对不同看法给出理由。')
+    lines.push('写之前先在脑子里过一遍：这堆评论在聊哪个具体的点？最容易接的是哪一句？')
+    lines.push('然后写**一条接在上面某个点后面的评论**：可以补充角度、接个梗、或者对不同看法给出理由；')
+    lines.push('开头最好直接落在那个具体的点上（比如回一句他们提到的情节/槽点），不要先来一段总结。')
   } else {
     lines.push('')
-    lines.push('评论区暂时没有可参考的讨论，请围绕视频本身写一条具体、不空洞的评论。')
+    lines.push('评论区目前没有任何可参考的讨论（新视频）。这条视频的评论优先级最低——')
+    lines.push('只围绕视频本身写一条具体的、像随口说的评论，不要总结视频主旨。')
   }
 
   const parts = []
@@ -2949,8 +3016,10 @@ export function apply(ctx) {
         }
         try {
           const v = await videoBrief(state, bvid)
-          setPhase('拟评论中', '读评论区')
-          const comments = await fetchComments(state, v.aid, 15)
+          setPhase('拟评论中', '通读评论区')
+          // 手动起草也要先通读评论区——不然写出来的东西跟评论区各说各话
+          const comments = await fetchComments(state, v.aid, 20, { wide: true })
+          log('info', `先读了 ${comments.length} 条评论（该视频共 ${comments.total || comments.length} 条，高赞 ${comments.hotCount ?? '?'} / 新 ${comments.freshCount ?? '?'}）`)
           setPhase('拟评论中', '看视频讲了什么')
           const digest = await videoDigest(state, v, llm, currentRoute(), attachments)
           setPhase('拟评论中', `素材 ${digest.layer} · 结合 ${comments.length} 条评论`)
@@ -3018,6 +3087,36 @@ export function apply(ctx) {
           sentToday: state.commentedToday || 0,
           cap: state.commentDailyCap ?? 3,
         })
+      }
+
+      if (action === 'comments.peek') {
+        // 只读诊断：看看「通读评论区」到底读到了什么。不发评论、不写状态。
+        const bvid = String(body.bvid || '').trim() || (state.lastRun?.[0]?.bvid ?? '')
+        if (!/^BV[0-9A-Za-z]{10}$/.test(bvid)) {
+          return sendJson(res, 200, { ok: false, error: '需要一个 bvid（或先跑一轮）' })
+        }
+        try {
+          const v = await videoBrief(state, bvid)
+          const comments = await fetchComments(state, v.aid, 20, { wide: true })
+          const byLike = [...comments].sort((a, b) => b.like - a.like).slice(0, 6)
+            .map((c) => ({ text: c.text.slice(0, 80), like: c.like, author: c.author }))
+          const byTime = [...comments].sort((a, b) => (b.at || 0) - (a.at || 0)).slice(0, 6)
+            .map((c) => ({ text: c.text.slice(0, 80), like: c.like, author: c.author }))
+          return sendJson(res, 200, {
+            ok: true,
+            bvid,
+            aid: v.aid,
+            title: v.title,
+            read: comments.length,
+            total: comments.total,
+            hotCount: comments.hotCount ?? null,
+            freshCount: comments.freshCount ?? null,
+            byLike,
+            byTime,
+          })
+        } catch (error) {
+          return sendJson(res, 200, { ok: false, error: String(error?.message || error) })
+        }
       }
 
       if (action === 'comment.debug') {

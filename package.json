@@ -1,6 +1,6 @@
 {
   "name": "dsh-whale-panel",
-  "version": "1.28.0",
+  "version": "1.29.0",
   "type": "module",
   "description": "白鲸台 · DeepSeek Harness 常驻浮窗：按概率学习你的 B站 兴趣并按半衰期淡忘，在 token 额度内挑片，契合度达标才 @ 你，评论有日上限与脱敏闸，政治/政府/前沿科学一律不评价。",
   "keywords": [
@@ -47,7 +47,7 @@
     "tools/*.cjs"
   ],
   "scripts": {
-    "check": "node --check index.js && node --check client.js && node tools/render-probe.cjs empty && node tools/render-probe.cjs full && node tools/render-probe.cjs cap && node tools/render-probe.cjs paused",
+    "check": "node --check index.js && node --check client.js && node tools/render-probe.cjs empty && node tools/render-probe.cjs empty --open && node tools/render-probe.cjs full --open && node tools/render-probe.cjs cap --open && node tools/render-probe.cjs paused --open",
     "pack:dry": "npm pack --dry-run"
   },
   "dsh": {

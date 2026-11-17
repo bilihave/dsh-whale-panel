@@ -248,7 +248,10 @@ window.__ModuleLoader__.load({
     function Panel() {
       // ⚠️ 收起状态**不持久化**：以前点过「收起」，刷新后仍然只剩右下角一颗小按钮，
       //    很容易被当成"插件没显示"。现在每次打开页面都默认展开，收起只在本次会话内有效。
-      const [open, setOpen] = useState(true)
+      // ⚠️ 默认**收起**：开机时只出现右下角一颗小图标，不展开整块面板。
+      //    主人 2026-11-17 的要求：DeepSeek 打开后它应该以小图标形式出现。
+      //    想展开点一下图标；展开状态不持久化，下次启动仍然是小图标。
+      const [open, setOpen] = useState(false)
       const [pos, setPos] = useState(readPos)
       const [tab, setTab] = useState(() => lsGet(KEYS.tab) || 'learn')
       const [themeMode, setThemeMode] = useState(() => lsGet(KEYS.theme) || 'auto')
@@ -745,13 +748,30 @@ window.__ModuleLoader__.load({
       const themeLabel = themeMode === 'auto' ? '跟随系统' : (dark ? '夜间' : '日间')
 
       if (!open) {
-        // 收起状态只剩这颗小按钮 —— 它容易被当成"插件没了"，所以给个明确的提示
+        // 收起状态 = 右下角一颗小图标（默认就是这个状态）。
+        // 加一个小圆点表示"它在不在干活"，避免被当成插件没装。
+        const sEarly = st || {}
+        const running = sEarly.autoRun && !sEarly.paused
+        const dotColor = sEarly.paused ? C.faint : (running ? C.accent : C.sub)
         return h('button', {
-          style: css.fab,
-          title: '打开白鲸台（已收起）',
+          style: { position: 'relative', ...css.fab },
+          title: sEarly.paused
+            ? '白鲸台（总开关关着）· 点开'
+            : (running ? '白鲸台 · 连播中 · 点开' : '白鲸台 · 点开'),
           'aria-label': '打开白鲸台',
           onClick: () => { setOpen(true); lsSet(KEYS.open, '1') },
-        }, '鲸')
+        },
+          '鲸',
+          h('span', {
+            style: {
+              position: 'absolute', top: 5, right: 5,
+              width: 9, height: 9, borderRadius: 99,
+              background: dotColor,
+              border: `1.5px solid ${C.card || '#0b1220'}`,
+              boxShadow: running ? `0 0 0 3px ${rgba(C.accent, 0.25)}` : 'none',
+            },
+          }),
+        )
       }
 
       const s = st || {}

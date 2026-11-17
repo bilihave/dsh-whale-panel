@@ -77,6 +77,12 @@ const fakeNulls = [
   { bvid: 'BV1aa', title: '视频', aid: 1, cid: 2, duration: 300, danmaku: 9 },
   { name: '选片中', detail: '目标 12 条 · 峰时' }, // phaseInfo
 ]
+// 面板默认是收起的（只剩一个「鲸」小图标）。要体检面板本体，就得把第一个
+// 布尔 useState 强制成 true（client.js 里第一个就是 open，见 useState(false)）。
+// 探针加 --open 才这么做，默认保留真实行为，方便顺便验证「开机默认收起」。
+const forceOpen = process.argv.includes('--open')
+let boolStateCount = 0
+
 const React = {
   createElement: h,
   useState: (init) => {
@@ -86,6 +92,10 @@ const React = {
     else if (Array.isArray(init)) {
       v = init.length ? init : (ST ? [{ bvid: 'BV1aa', title: '条目', aid: 1, cid: 2, duration: 300, at: now, text: '日志行', kind: 'info', level: 'info' }] : [])
     } else v = init
+    if (typeof v === 'boolean') {
+      boolStateCount += 1
+      if (forceOpen && boolStateCount === 1) v = true
+    }
     return [v, () => {}]
   },
   useRef: (v) => ({ current: v }),
